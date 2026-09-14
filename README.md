@@ -121,26 +121,26 @@
 ## 🚀 Quick start
 
 ```bash
-# Start the server (static + API in one file)
+# Start the server (static + API in one file, one port)
 python3 server.py
 
 # Open in browser
 http://127.0.0.1:8080
 ```
 
-The server runs two processes in threads:
-
-- **8080** — static files (HTML/CSS/JS)
-- **8001** — API for saving state and books
+One port serves everything: static files (HTML/CSS/JS) **and** the API (state, books, sounds, stress marks) — the frontend talks to the same origin, no cross-origin requests.
 
 Options:
 
 ```bash
-python3 server.py          # both servers
-python3 server.py --static # static only (8080)
-python3 server.py --api    # API only (8001)
-python3 server.py --quiet   # no request logging
+python3 server.py                     # 8080; if busy — 8081…8099 (auto)
+python3 server.py --port 9000        # exact port (busy = error)
+python3 server.py --port 0          # any free port, picked by the OS
+python3 server.py --host 127.0.0.1   # localhost only (for desktop wrappers)
+python3 server.py --quiet            # no request logging
 ```
+
+> 🐳 **Docker / any external port**: the image pins **8080** inside the container (`Dockerfile`), but you can expose it on any host port — `docker run -p 9000:8080 ...` just works: the frontend uses relative paths and doesn't care which port it's served from.
 
 ## 📁 Project structure
 
@@ -198,6 +198,8 @@ Books are stored as **plain files** in `books/` — the original filename is kep
 
 | Method     | Path                         | Description                                |
 | ---------- | ---------------------------- | ------------------------------------------ |
+| `GET`    | `/state`                   | Global state (settings, library snapshot)   |
+| `POST`   | `/state`                   | Save global state                           |
 | `GET`    | `/books`                   | List of books (metadata without text)      |
 | `POST`   | `/books`                   | Save a book (copies into`books/`)        |
 | `GET`    | `/books/<id>/text`         | Book text (FB2 parsed on the fly)          |

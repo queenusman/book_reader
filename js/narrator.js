@@ -12,8 +12,8 @@
    Диктор читает текущую страницу → мини-пауза → перелистывание
    (с анимацией и звуком, если включены) → следующая страница. */
 
-const API_PORT = 8001;
-const API_URL = `${location.protocol}//${location.hostname}:${API_PORT}`;
+// API диктора — тот же origin, что и страница (один сервер, один порт):
+// запросы по относительным путям /tts/...
 
 // Кэш разметки ударений: предложение -> текст с U+0301. Абзацы
 // повторяются между книгами редко, но кэш всё равно экономит запросы.
@@ -24,7 +24,7 @@ const stressCache = new Map();
 async function fetchStressed(text) {
   if (!text || stressCache.has(text)) return stressCache.get(text) ?? text;
   try {
-    const res = await fetch(`${API_URL}/tts/stress`, {
+    const res = await fetch('/tts/stress', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
@@ -126,7 +126,7 @@ class EdgeTTSEngine {
       фолбэк на Web Speech, чтобы кнопка диктора работала уже сегодня. */
   async speak(text, opts = {}) {
     try {
-      const res = await fetch(`${API_URL}/tts`, {
+      const res = await fetch('/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, voice: opts.voice || 'ru-RU-DmitryNeural' }),

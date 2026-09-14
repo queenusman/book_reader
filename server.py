@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """
-BookHaven 3D — единый сервер для разработки.
+BookHaven 3D — единый сервер.
 
-Запускает:
-- Статический файловый сервер на порту 8080 (для HTML/CSS/JS)
-- API-сервер состояния на порту 8001 (для сохранения прогресса)
+ОДИН порт обслуживает и статику (HTML/CSS/JS), и API (состояние,
+книги, звуки, ударения для диктора) — фронтенд ходит по
+относительным путям на тот же origin, без кросс-доменных запросов.
 
 Использование:
-    python3 server.py          # запустить оба сервера
-    python3 server.py --static # только статический сервер
-    python3 server.py --api    # только API-сервер
+    python3 server.py                     # 8080; занят — 8081…8099 (авто)
+    python3 server.py --port 9000         # точный порт (занят = ошибка)
+    python3 server.py --port 0           # свободный порт выбирает ОС
+    python3 server.py --host 127.0.0.1    # только локально (для обёрток)
+    python3 server.py --quiet            # без логов запросов
+
+Порт, на котором приложение видно СНАРУЖИ, может быть любым
+(Docker -p 9000:8080, обратный прокси): фронтенд ходит по
+относительным путям на тот же origin — серверу не нужно знать,
+на каком порту его видит пользователь.
 """
 
 import argparse
 import json
 import os
 import re
-import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -27,6 +33,11 @@ DATA_FILE = ROOT / 'data' / 'state.json'
 BOOKS_DIR = ROOT / 'books'
 SOUNDS_DIR = ROOT / 'sounds'
 STRESS_DICT_FILE = ROOT / 'lib' / 'stress_dict.json.gz'
+
+# Порт по умолчанию и сколько запасных пробовать, если он занят
+# (8080 занят у пользователя — встанем на 8081, и так до 8099).
+DEFAULT_PORT = 8080
+PORT_FALLBACK_ATTEMPTS = 20
 
 # Максимальный размер тела запроса (байт). Книга целиком (FB2 ~5-10 МБ)
 # вписывается в лимит с запасом; всё, что больше, — отвергаем, чтобы
@@ -115,9 +126,19 @@ def now_str():
 
 
 def log(msg):
-    """Единая точка вывода логов в терминал."""
+    """Диагностика и логи запросов — глушится флагом --quiet."""
     if not QUIET:
         print(f'[{now_str()}] {msg}', flush=True)
+
+
+def announce(msg):
+    """Стартовая информация и критические ошибки.
+
+    Печатается ВСЕГДА, даже с --quiet: --quiet задуман как «без логов
+    запросов», а не «полное молчание». Пользователь обязан видеть, на
+    каком порту открылось приложение, и почему оно не открылось.
+    """
+    print(f'[{now_str()}] {msg}', flush=True)
 
 
 def ensure_store():
@@ -514,63 +535,79 @@ class APIHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         from urllib.parse import unquote
-        
-        if self.path == '/books':
+        path = self.path.split('?', 1)[0]   # срезаем query-string
+
+        if path == '/state':
+            self._send_json(load_state())
+        elif path == '/books':
             self._list_books()
-        elif self.path == '/sounds':
+        elif path == '/sounds':
             self._list_sounds()
-        elif self.path.startswith('/books/') and self.path.endswith('/text'):
-            book_id = unquote(self.path.split('/')[-2])
+        elif path.startswith('/books/') and path.endswith('/text'):
+            book_id = unquote(path.split('/')[-2])
             self._get_book_text(book_id)
-        elif self.path.startswith('/books/') and self.path.endswith('/meta'):
-            book_id = unquote(self.path.split('/')[-2])
+        elif path.startswith('/books/') and path.endswith('/meta'):
+            book_id = unquote(path.split('/')[-2])
             self._get_book_meta(book_id)
-        elif self.path.startswith('/books/') and self.path.endswith('/cover'):
-            book_id = unquote(self.path.split('/')[-2])
+        elif path.startswith('/books/') and path.endswith('/cover'):
+            book_id = unquote(path.split('/')[-2])
             self._get_book_cover(book_id)
-        elif self.path.startswith('/books/') and '/image/' in self.path:
+        elif path.startswith('/books/') and '/image/' in path:
             # /books/<id>/image/<name> — картинка из тела книги
-            parts = self.path.split('/')
+            parts = path.split('/')
             book_id = unquote(parts[2])
             img_name = unquote(parts[4])
             self._get_book_image(book_id, img_name)
         else:
-            self._send_json(load_state())
+            self._send_json({'error': 'Not found'}, status=404)
 
     def do_POST(self):
         from urllib.parse import unquote
+        path = self.path.split('?', 1)[0]   # срезаем query-string
 
-        if self.path == '/books':
+        if path == '/state':
+            self._save_state()
+        elif path == '/books':
             self._save_book()
-        elif self.path == '/tts/stress':
+        elif path == '/tts/stress':
             self._tts_stress()
-        elif self.path.startswith('/books/') and self.path.endswith('/meta'):
-            book_id = unquote(self.path.split('/')[-2])
+        elif path == '/tts':
+            # edge-tts на сервере не реализован (во фронтенде — только каркас
+            # с фолбэком на Web Speech). Честный 501 вместо молчаливого
+            # проваливания в сохранение состояния.
+            self._send_json({'error': 'TTS engine not implemented'}, status=501)
+        elif path.startswith('/books/') and path.endswith('/meta'):
+            book_id = unquote(path.split('/')[-2])
             self._update_book_meta(book_id)
         else:
-            payload, err = self._read_json_body()
-            if err:
-                self._send_json(err, status=400)
-                return
-            try:
-                saved = save_state(payload)
-            except OSError as e:
-                self._send_json({'error': 'Не удалось сохранить состояние', 'detail': str(e)}, status=500)
-                return
-            if not saved:
-                # Устаревший штамп: на сервере уже новее состояние (его записал
-                # другой браузер). Отдаём актуальное — клиент подтянется.
-                self._send_json({'ok': False, 'stale': True, 'state': load_state()})
-                return
-            # Отдаём новый штамп: иначе клиент запомнит старый из localStorage
-            # и его следующий persist будет отвергнут как stale (настройки
-            # «откатывались» к серверным после второго сохранения подряд).
-            self._send_json({'ok': True, 'updatedAt': load_state().get('updatedAt', 0)})
+            self._send_json({'error': 'Not found'}, status=404)
+
+    def _save_state(self):
+        """Сохраняет глобальное состояние (POST /state)."""
+        payload, err = self._read_json_body()
+        if err:
+            self._send_json(err, status=400)
+            return
+        try:
+            saved = save_state(payload)
+        except OSError as e:
+            self._send_json({'error': 'Не удалось сохранить состояние', 'detail': str(e)}, status=500)
+            return
+        if not saved:
+            # Устаревший штамп: на сервере уже новее состояние (его записал
+            # другой браузер). Отдаём актуальное — клиент подтянется.
+            self._send_json({'ok': False, 'stale': True, 'state': load_state()})
+            return
+        # Отдаём новый штамп: иначе клиент запомнит старый из localStorage
+        # и его следующий persist будет отвергнут как stale (настройки
+        # «откатывались» к серверным после второго сохранения подряд).
+        self._send_json({'ok': True, 'updatedAt': load_state().get('updatedAt', 0)})
 
     def do_DELETE(self):
         from urllib.parse import unquote
-        if self.path.startswith('/books/'):
-            book_id = unquote(self.path.split('/')[-1])
+        path = self.path.split('?', 1)[0]   # срезаем query-string
+        if path.startswith('/books/'):
+            book_id = unquote(path.split('/')[-1])
             self._delete_book(book_id)
         else:
             self._send_json({'error': 'Not found'}, status=404)
@@ -1110,63 +1147,160 @@ class StaticHandler(SimpleHTTPRequestHandler):
             print(f'[{now_str()}] {ip} {line}', flush=True)
 
 
-def run_server(handler_class, port, name):
-    """Запускает сервер в отдельном потоке.
-       Слушает на 0.0.0.0 — доступен с других устройств в сети.
-       URL для печати: подставляем актуальный IP компьютера."""
-    server = ThreadingHTTPServer(('0.0.0.0', port), handler_class)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+def is_api_path(path):
+    """True, если путь обслуживает API (а не статику).
 
-    # Определяем локальный IP для подсказки в консоли
-    local_ip = '127.0.0.1'
+    Точные совпадения: /state, /books, /sounds, /tts.
+    Префиксы: /books/... (текст, метаданные, обложки) и /tts/... (stress).
+    ВАЖНО: /sounds/<файл> — НЕ API: это сами звуковые файлы перелистывания,
+    их отдаёт статика из папки sounds/.
+    """
+    if not path:
+        return False
+    p = path.split('?', 1)[0]   # query-string не влияет на маршрутизацию
+    if p in ('/state', '/books', '/sounds', '/tts'):
+        return True
+    return p.startswith('/books/') or p.startswith('/tts/')
+
+
+class UnifiedHandler(APIHandler, StaticHandler):
+    """Единый обработчик: ОДИН порт — и API, и статика.
+
+    Маршрутизация по пути: /state, /books..., /tts... и точный /sounds
+    обслуживает логика APIHandler; всё остальное — статика (StaticHandler).
+    Фронтенд ходит по относительным путям на тот же origin — никаких
+    кросс-доменных запросов и второго порта.
+
+    Наследование (MRO): API-методы (_send_json, работа с книгами) — из
+    APIHandler; раздача файлов и защита путей (translate_path) — из
+    StaticHandler.
+    """
+
+    def do_GET(self):
+        if is_api_path(self.path):
+            APIHandler.do_GET(self)
+        else:
+            StaticHandler.do_GET(self)
+
+    def do_POST(self):
+        if is_api_path(self.path):
+            APIHandler.do_POST(self)
+        else:
+            # POST в статический путь — не бывает: честный 404
+            self._send_json({'error': 'Not found'}, status=404)
+
+    def do_DELETE(self):
+        if is_api_path(self.path):
+            APIHandler.do_DELETE(self)
+        else:
+            self._send_json({'error': 'Not found'}, status=404)
+
+    def end_headers(self):
+        # Кэш-заголовки — только для статики: API-ответы управляют ими сами
+        # (например, _send_binary ставит свой Cache-Control обложкам), и
+        # второй заголовок от статики им только мешал бы.
+        if is_api_path(self.path):
+            BaseHTTPRequestHandler.end_headers(self)
+        else:
+            StaticHandler.end_headers(self)
+
+    def log_message(self, format, *args):
+        # API-запросы логируем все (они содержательные), статику — только ошибки
+        if is_api_path(self.path):
+            APIHandler.log_message(self, format, *args)
+        else:
+            StaticHandler.log_message(self, format, *args)
+
+
+def local_ip():
+    """Локальный IP машины — для подсказки «как открыть с телефона»."""
     try:
         import socket
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('8.8.8.8', 80))
-        local_ip = s.getsockname()[0]
+        s.connect(('8.8.8.8', 80))   # UDP: пакеты не уходят, адрес не важен
+        ip = s.getsockname()[0]
         s.close()
+        return ip
     except Exception:
-        pass
+        return '127.0.0.1'
 
-    log(f'  {name}: http://{local_ip}:{port}  (локально: http://127.0.0.1:{port})')
-    return server
+
+def bind_server(host, port, allow_fallback):
+    """Создаёт сервер на host:port. Возвращает (server, фактический_порт)
+    или (None, None), если заняты все кандидаты.
+
+    - port == 0: ОС сама выбирает свободный порт — занят быть не может;
+    - allow_fallback: если port занят, пробуем port+1, port+2, …
+      (локальный запуск: 8080 занят — встанем на 8081);
+    - без fallback: только точный port — так нужно Docker, где healthcheck
+      и маппинг портов рассчитаны на конкретный порт.
+    """
+    if port == 0:
+        candidates = [0]
+    elif allow_fallback:
+        candidates = [port + i for i in range(PORT_FALLBACK_ATTEMPTS)]
+    else:
+        candidates = [port]
+
+    for candidate in candidates:
+        try:
+            server = ThreadingHTTPServer((host, candidate), UnifiedHandler)
+            # server_address[1] — фактический порт (важно при port=0)
+            return server, server.server_address[1]
+        except OSError:
+            continue   # порт занят — пробуем следующего кандидата
+    return None, None
 
 
 def main():
-    parser = argparse.ArgumentParser(description='BookHaven 3D — сервер разработки')
-    parser.add_argument('--static', action='store_true', help='Только статический сервер (8080)')
-    parser.add_argument('--api', action='store_true', help='Только API-сервер (8001)')
+    parser = argparse.ArgumentParser(description='BookHaven 3D — единый сервер (статика + API на одном порту)')
+    parser.add_argument('--port', type=int, default=None,
+                        help=f'порт сервера; без флага — {DEFAULT_PORT}, а если занят — '
+                             f'{DEFAULT_PORT + 1}…{DEFAULT_PORT + PORT_FALLBACK_ATTEMPTS - 1}; '
+                             '0 — свободный порт выбирает ОС. '
+                             'Явный порт точен: занят = ошибка (так нужно Docker)')
+    parser.add_argument('--host', default='0.0.0.0',
+                        help='Адрес: 0.0.0.0 — доступ с других устройств в сети, '
+                             '127.0.0.1 — только локально (для десктоп-обёрток)')
     parser.add_argument('--quiet', action='store_true', help='Не выводить логи запросов в терминал')
     args = parser.parse_args()
 
     global QUIET
     QUIET = args.quiet
 
-    # Если не указаны флаги — запускаем оба
-    run_static = args.static or not args.api
-    run_api = args.api or not args.static
+    announce(f'BookHaven 3D — запуск сервера (pid {os.getpid()})')
 
-    log(f'BookHaven 3D — запуск серверов (pid {os.getpid()})')
-    servers = []
+    # Явный --port — точное попадание: Docker и скрипты рассчитывают на
+    # конкретный порт (healthcheck, маппинг -p 9000:8080). Без --port —
+    # дефолт с запасными: у пользователя 8080 может быть занят.
+    requested = DEFAULT_PORT if args.port is None else args.port
+    server, port = bind_server(args.host, requested, allow_fallback=args.port is None)
 
-    if run_static:
-        servers.append(run_server(StaticHandler, 8080, 'Статика'))
+    if server is None:
+        if args.port is None:
+            announce(f'ОШИБКА: порты {requested}–{requested + PORT_FALLBACK_ATTEMPTS - 1} на {args.host} заняты.')
+        else:
+            announce(f'ОШИБКА: порт {requested} на {args.host} занят (порт указан явно — запасные не пробуем).')
+        announce('Похоже, там уже работает другое приложение (или копия этого сервера).')
+        announce('Укажите свободный порт:  python3 server.py --port 9000   (или --port 0 — выберет ОС)')
+        raise SystemExit(1)
 
-    if run_api:
-        servers.append(run_server(APIHandler, 8001, 'API'))
+    if requested == 0:
+        announce(f'ОС выделила свободный порт: {port}')
+    elif port != requested:
+        announce(f'Порт {requested} занят — открываюсь на следующем свободном: {port}')
 
-    log('Готово. Нажмите Ctrl+C для остановки.')
+    # Подсказка для открытия: снаружи — IP машины, локально — 127.0.0.1
+    shown = '127.0.0.1' if args.host in ('127.0.0.1', 'localhost') else local_ip()
+    announce(f'  Приложение: http://{shown}:{port}  (локально: http://127.0.0.1:{port})')
+    announce('Готово. Нажмите Ctrl+C для остановки.')
 
     try:
-        # Держим главный поток живым
-        while True:
-            threading.Event().wait(1)
+        server.serve_forever()
     except KeyboardInterrupt:
-        log('Остановка серверов...')
-        for s in servers:
-            s.shutdown()
-        log('Готово.')
+        announce('Остановка сервера...')
+        server.shutdown()
+        announce('Готово.')
 
 
 if __name__ == '__main__':

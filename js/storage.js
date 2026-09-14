@@ -4,10 +4,9 @@
 
 const LS_KEY = 'bookhaven3d';
 
-// API-сервер: используем хост страницы (чтобы работало и с телефона по сети),
-// порт API фиксирован — 8001.
-const API_PORT = 8001;
-const SERVER_URL = `${location.protocol}//${location.hostname}:${API_PORT}`;
+// API обслуживает тот же origin, что и страница (статика и API — один
+// сервер, один порт, см. server.py): все запросы идут по относительным
+// путям — /state, /books/... — и работают с любого хоста и порта.
 
 function buildStateSnapshot(settings, books, lastOpenedBookId = null, updatedAt = null) {
   return {
@@ -49,7 +48,7 @@ function fetchWithTimeout(url, options = {}, timeoutMs = 500) {
 export async function saveState(state) {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify(state));
-    const res = await fetchWithTimeout(SERVER_URL, {
+    const res = await fetchWithTimeout('/state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(state),
@@ -81,7 +80,7 @@ export async function loadStateFromServer() {
   try {
     // Таймаут 3000мс: на удалённом сервере 700мс мало, и это приводило
     // к ложной «пустой» библиотеке и запуску миграции с дубликатами
-    const res = await fetchWithTimeout(SERVER_URL, {}, 3000);
+    const res = await fetchWithTimeout('/state', {}, 3000);
     if (!res.ok) return null;
     const data = await res.json();
     if (data?.books) {
@@ -99,7 +98,7 @@ export async function loadBooksFromServer() {
     // Таймаут 5000мс: 700мс на удалённом сервере обрывали запрос,
     // возвращался null, и main.js запускал миграцию из state.json,
     // которая создавала дубликаты уже существующих книг
-    const res = await fetchWithTimeout(`${SERVER_URL}/books`, {}, 5000);
+    const res = await fetchWithTimeout('/books', {}, 5000);
     if (!res.ok) return null;
     const data = await res.json();
     const books = data?.books || [];
@@ -113,7 +112,7 @@ export async function loadBooksFromServer() {
 
 export async function loadBookText(bookId) {
   try {
-    const res = await fetchWithTimeout(`${SERVER_URL}/books/${encodeURIComponent(bookId)}/text`, {}, 30000);
+    const res = await fetchWithTimeout(`/books/${encodeURIComponent(bookId)}/text`, {}, 30000);
     if (!res.ok) return null;
     const data = await res.json();
     return data; // { text, format? }
@@ -124,7 +123,7 @@ export async function loadBookText(bookId) {
 
 export async function saveBookToServer(book) {
   try {
-    const res = await fetchWithTimeout(`${SERVER_URL}/books`, {
+    const res = await fetchWithTimeout('/books', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(book),
@@ -147,7 +146,7 @@ export async function deleteBookFromServer(bookId) {
     // Таймаут 5000мс (как у списка книг): 700мс на удалённом сервере
     // обрывали запрос — книга исчезала локально, но оставалась на сервере
     // и возвращалась после перезагрузки.
-    const res = await fetchWithTimeout(`${SERVER_URL}/books/${encodeURIComponent(bookId)}`, {
+    const res = await fetchWithTimeout(`/books/${encodeURIComponent(bookId)}`, {
       method: 'DELETE',
     }, 5000);
     return res.ok;
@@ -161,7 +160,7 @@ export async function deleteBookFromServer(bookId) {
 export async function saveBookMeta(bookId, meta) {
   try {
     const res = await fetchWithTimeout(
-      `${SERVER_URL}/books/${encodeURIComponent(bookId)}/meta`,
+      `/books/${encodeURIComponent(bookId)}/meta`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -181,7 +180,7 @@ export async function saveBookMeta(bookId, meta) {
 export async function loadBookMeta(bookId) {
   try {
     const res = await fetchWithTimeout(
-      `${SERVER_URL}/books/${encodeURIComponent(bookId)}/meta`,
+      `/books/${encodeURIComponent(bookId)}/meta`,
       {},
       5000
     );

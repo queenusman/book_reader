@@ -1,18 +1,17 @@
 /* ===== BookHaven 3D — инициализация, состояние, демо-контент ===== */
 
 import { Reader } from './reader.js?v=20260903c';
-import { Library } from './library.js?v=20260903a';
+import { Library } from './library.js?v=20260914a';
 import { Bookmarks } from './bookmarks.js?v=20260806d';
 import { TOC } from './toc.js?v=20260806d';
 import { Notes } from './notes.js?v=20260827b';
-import { loadState, loadStateFromServer, loadBooksFromServer, loadBookText, loadBookMeta, saveBookToServer, saveBookMeta, persistSnapshot, debouncedSave, saveState } from './storage.js?v=20260830b';
-import { buildPositionAnchor, resolveAnchorPage } from './position.js?v=20260903a';
-import { pageSounds } from './sounds.js?v=20260903a';
-import { narrator } from './narrator.js?v=20260903c';
+import { loadState, loadStateFromServer, loadBooksFromServer, loadBookText, loadBookMeta, saveBookToServer, saveBookMeta, persistSnapshot, debouncedSave, saveState } from './storage.js?v=20260914a';
+import { buildPositionAnchor, resolveAnchorPage } from './position.js?v=20260830a';
+import { pageSounds } from './sounds.js?v=20260914a';
+import { narrator } from './narrator.js?v=20260914a';
 
-// API-сервер (для загрузки картинок из FB2: обложки и иллюстраций в тексте)
-const API_PORT = 8001;
-const SERVER_URL = `${location.protocol}//${location.hostname}:${API_PORT}`;
+// Картинки из FB2 (обложки и иллюстрации) грузим с того же origin
+// по относительным путям — статика и API обслуживаются одним сервером.
 
 // Кэш размеров картинок из FB2: ключ «bookId|src» (id <binary> повторяется
 // между книгами — «cover.jpg» есть почти в каждой) -> { w, h }.
@@ -30,7 +29,7 @@ function preloadBookImages(blocks, bookId) {
     if (b.type !== 'image' || !b.src) continue;
     const key = imgCacheKey(bookId, b.src);
     if (imageSizeCache.has(key)) continue;
-    const url = `${SERVER_URL}/books/${encodeURIComponent(bookId)}/image/${encodeURIComponent(b.src)}`;
+    const url = `/books/${encodeURIComponent(bookId)}/image/${encodeURIComponent(b.src)}`;
     tasks.push(new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -215,7 +214,7 @@ function renderBlocks(blocks, bookId = 'demo') {
         // пара неразрывна. Пагинатор передал _imgMaxH — точный лимит
         // высоты картинки (весь остаток после подписи), рендер
         // сжимает её так же (max-height inline).
-        const imgSrc = `${SERVER_URL}/books/${encodeURIComponent(bookId)}/image/${encodeURIComponent(src || '')}`;
+        const imgSrc = `/books/${encodeURIComponent(bookId)}/image/${encodeURIComponent(src || '')}`;
         const dim = src ? imageSizeCache.get(imgCacheKey(bookId, src)) : null;
         const style = dim && dim.w && dim.h ? `aspect-ratio:${dim.w}/${dim.h};` : '';
         const maxH = _imgMaxH ? `max-height:${_imgMaxH}px;` : '';

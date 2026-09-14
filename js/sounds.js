@@ -5,9 +5,7 @@
    При каждом перелистывании играется СЛУЧАЙНЫЙ звук, не совпадающий
    с предыдущим (когда файлов больше одного). */
 
-// API-сервер: хост страницы, порт фиксирован (как в storage.js)
-const API_PORT = 8001;
-const API_URL = `${location.protocol}//${location.hostname}:${API_PORT}`;
+// API — тот же origin, что и страница (один сервер, один порт)
 
 // Fallback, пока список с сервера не загрузился (или API недоступен)
 const DEFAULT_SOUNDS = ['page-flip-sound.mp3'];
@@ -41,7 +39,7 @@ class PageSounds {
   async _loadList() {
     let names = null;
     try {
-      const res = await fetchWithTimeout(`${API_URL}/sounds`);
+      const res = await fetchWithTimeout('/sounds');
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.sounds) && data.sounds.length > 0) {
