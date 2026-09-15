@@ -23,16 +23,33 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
-ROOT = Path(__file__).parent
-DATA_FILE = ROOT / 'data' / 'state.json'
-BOOKS_DIR = ROOT / 'books'
-SOUNDS_DIR = ROOT / 'sounds'
-STRESS_DICT_FILE = ROOT / 'lib' / 'stress_dict.json.gz'
+# ---- Пути: статика vs пользовательские данные ----
+# В PyInstaller (собранный .app/.exe) __file__ указывает на ВРЕМЕННУЮ
+# распаковку (sys._MEIPASS), где лежат статические файлы (css/js/lib/...).
+# Пользовательские данные (books/, data/) туда класть НЕЛЬЗЯ — они
+# пропадут при каждом запуске. Поэтому:
+#   STATIC_ROOT — откуда раздаём статику (в PyInstaller — _MEIPASS);
+#   DATA_ROOT   — где живут книги и state.json (рядом с приложением).
+if getattr(sys, 'frozen', False):
+    # Собранный бинарник (PyInstaller)
+    STATIC_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
+    # Данные — рядом с исполняемым файлом (не во временной распаковке)
+    DATA_ROOT = Path(sys.executable).resolve().parent
+else:
+    # Обычный запуск из исходников: всё в одном каталоге
+    STATIC_ROOT = Path(__file__).parent
+    DATA_ROOT = STATIC_ROOT
+
+DATA_FILE = DATA_ROOT / 'data' / 'state.json'
+BOOKS_DIR = DATA_ROOT / 'books'
+SOUNDS_DIR = STATIC_ROOT / 'sounds'
+STRESS_DICT_FILE = STATIC_ROOT / 'lib' / 'stress_dict.json.gz'
 
 # Порт по умолчанию и сколько запасных пробовать, если он занят
 # (8080 занят у пользователя — встанем на 8081, и так до 8099).
@@ -1102,7 +1119,7 @@ class StaticHandler(SimpleHTTPRequestHandler):
     PUBLIC_ROOT_FILES = {'index.html', 'book.svg', 'favicon.ico'}
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(ROOT), **kwargs)
+        super().__init__(*args, directory=str(STATIC_ROOT), **kwargs)
 
     def translate_path(self, path):
         """Пропускает только публичные пути; остальное — 404.
@@ -1119,7 +1136,7 @@ class StaticHandler(SimpleHTTPRequestHandler):
             or any(rel.startswith(p) for p in self.PUBLIC_PREFIXES)
         )
         if not allowed:
-            return str(ROOT / '__forbidden__')  # несуществующий путь → 404
+            return str(STATIC_ROOT / '__forbidden__')  # несуществующий путь → 404
         return super().translate_path(path)
 
     def end_headers(self):
